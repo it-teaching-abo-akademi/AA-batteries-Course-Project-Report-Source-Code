@@ -18,7 +18,7 @@ tflite::MicroInterpreter* interpreter = nullptr;
 TfLiteTensor* input = nullptr;
 TfLiteTensor* output = nullptr;
 
-constexpr int kTensorArenaSize = 150 * 1024;  // Adjust based on your model's requirements
+constexpr int kTensorArenaSize = 50 * 1024;  // Adjust based on your model's requirements
 alignas(16) uint8_t tensor_arena[kTensorArenaSize];
 
 const char* image_names[] = {"0", "2", "3", "5", "8"};
