@@ -1,55 +1,50 @@
+#include <Arduino.h>
 #include <TensorFlowLite.h>
-#include "model.h"  // Replace with the actual model header file
+#include "tensorflow/lite/micro/all_ops_resolver.h"
+#include "tensorflow/lite/micro/micro_interpreter.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+#include "model.h"
 #include "image_data_zero.h"
 #include "image_data_two.h"
 #include "image_data_three.h"
 #include "image_data_five.h"
 #include "image_data_eight.h"
 
-#include "tensorflow/lite/micro/all_ops_resolver.h"
-#include "tensorflow/lite/micro/micro_interpreter.h"
-#include "tensorflow/lite/micro/micro_log.h"
-#include "tensorflow/lite/micro/system_setup.h"
-#include "tensorflow/lite/schema/schema_generated.h"
+// Memory area for the TFLite tensor arena
+constexpr int kArenaSize = 10 * 1024;
+uint8_t tensor_arena[kArenaSize];
 
-namespace {
-const tflite::Model* model = nullptr;
-tflite::MicroInterpreter* interpreter = nullptr;
-TfLiteTensor* input = nullptr;
-TfLiteTensor* output = nullptr;
-
-constexpr int kTensorArenaSize = 50 * 1024;  // Adjust based on your model's requirements
-alignas(16) uint8_t tensor_arena[kTensorArenaSize];
-
-const char* image_names[] = {"0", "2", "3", "5", "8"};
-const uint8_t* images[] = {image_data_zero, image_data_two, image_data_three, image_data_five, image_data_eight};  // Replace with actual image data arrays
+// Input Data
+const char* image_names[] = {"Img Number 0", "Img Number 2", "Img Number 3", "Img Number 5", "Img Number 8"};
+const uint8_t* images[] = {image_data_zero, image_data_two, image_data_three, image_data_five, image_data_eight};
 const int num_images = 5;
-}  // namespace
+
+// TFLite globals
+tflite::MicroInterpreter* interpreter;
+TfLiteTensor* input;
+TfLiteTensor* output;
 
 void setup() {
-  Serial.begin(115200);
-  tflite::InitializeTarget();
+  Serial.begin(9600);
 
   // Load the model
-  model = tflite::GetModel(g_model);
+  const tflite::Model* model = tflite::GetModel(g_model);
   if (model->version() != TFLITE_SCHEMA_VERSION) {
-    MicroPrintf(
-        "Model provided is schema version %d not equal "
-        "to supported version %d.",
-        model->version(), TFLITE_SCHEMA_VERSION);
+    Serial.println("Model version does not match Schema");
     return;
   }
 
-  // Set up the resolver and interpreter
+  // Define the operations resolver
   static tflite::AllOpsResolver resolver;
-  static tflite::MicroInterpreter static_interpreter(
-      model, resolver, tensor_arena, kTensorArenaSize);
+
+  // Build the interpreter
+  static tflite::MicroInterpreter static_interpreter(model, resolver, tensor_arena, kArenaSize);
   interpreter = &static_interpreter;
 
-  // Allocate tensor buffers
+  // Allocate memory for the model's tensors
   TfLiteStatus allocate_status = interpreter->AllocateTensors();
   if (allocate_status != kTfLiteOk) {
-    MicroPrintf("AllocateTensors() failed");
+    Serial.println("AllocateTensors() failed");
     return;
   }
 
@@ -57,64 +52,66 @@ void setup() {
   input = interpreter->input(0);
   output = interpreter->output(0);
 
-  // Debug prints
-  Serial.print("Input shape: ");
-  for (int i = 0; i < input->dims->size; i++) {
+  // Debug: print input and output tensor details
+  Serial.print("Input tensor dimensions: ");
+  for (int i = 0; i < input->dims->size; ++i) {
     Serial.print(input->dims->data[i]);
-    Serial.print(" ");
-  }
-  Serial.println();
-
-  Serial.print("Output shape: ");
-  for (int i = 0; i < output->dims->size; i++) {
-    Serial.print(output->dims->data[i]);
-    Serial.print(" ");
-  }
-  Serial.println();
-}
-
-void loadImageToTensor(const uint8_t* image_data) {
-  for (int i = 0; i < input->bytes; i++) {
-    input->data.uint8[i] = image_data[i];
-  }
-}
-
-void classifyImage(const char* image_name) {
-  // Run inference
-  TfLiteStatus invoke_status = interpreter->Invoke();
-  if (invoke_status != kTfLiteOk) {
-    MicroPrintf("Invoke failed");
-    return;
-  }
-
-  // Find the class with the maximum probability
-  uint8_t max_index = 0;
-  uint8_t max_value = output->data.uint8[0];
-  for (int i = 1; i < output->dims->data[1]; i++) {
-    if (output->data.uint8[i] > max_value) {
-      max_value = output->data.uint8[i];
-      max_index = i;
+    if (i < input->dims->size - 1) {
+      Serial.print(" x ");
     }
   }
+  Serial.println();
 
-  // Print the results
-  Serial.print("Image file name: ");
-  Serial.println(image_name);
-  Serial.print("Predicted class: ");
-  Serial.println(max_index);
-  Serial.print("Class probability: ");
-  Serial.println(max_value / 255.0);  // Assuming the output is quantized to uint8
+  Serial.print("Output tensor dimensions: ");
+  for (int i = 0; i < output->dims->size; ++i) {
+    Serial.print(output->dims->data[i]);
+    if (i < output->dims->size - 1) {
+      Serial.print(" x ");
+    }
+  }
+  Serial.println();
 }
 
 void loop() {
   for (int i = 0; i < num_images; i++) {
+
     // Load the image into the tensor
-    loadImageToTensor(images[i]);
+    for (int j = 0; j < input->bytes; j++) {
+    input->data.uint8[j] = images[i][j];
+    }
 
-    // Classify the image
-    classifyImage(image_names[i]);
+    // Run inference
+    TfLiteStatus invoke_status = interpreter->Invoke();
+    if (invoke_status != kTfLiteOk) {
+      Serial.println("Invoke failed");
+      return;
+    }
 
-    // Delay to avoid spamming the serial monitor
+    // Get the maximum probability
+    int8_t max_index = 0;
+    int8_t max_value = output->data.int8[0];
+    for (int i = 1; i < output->dims->data[1]; ++i) {
+      int8_t value = output->data.int8[i];
+      if (value > max_value) {
+        max_value = value;
+        max_index = i;
+      }
+    }
+
+    //Convert the probabiltity into float
+    float scale = output->params.scale;
+    int32_t zero_point = output->params.zero_point;
+    float max_value_f = (max_value - zero_point) * scale;
+
+    //Print image file name, class
+
+    Serial.print("Image file name: ");
+    Serial.println(image_names[i]);
+    Serial.print("Predicted class: ");
+    Serial.println(max_index);
+    Serial.print("Probability: ");
+    Serial.println(max_value_f);
+
     delay(1000);
   }
 }
